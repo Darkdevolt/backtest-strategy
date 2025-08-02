@@ -17,7 +17,12 @@ with st.sidebar:
         type="csv"
     )
 
-    st.header("2. Paramètres de la Stratégie")
+    st.header("2. Paramètres du Portefeuille")
+    initial_cash = st.number_input("Capital de départ", min_value=100, value=10000, step=100)
+    currency_symbol = st.text_input("Symbole de la Devise", value="$")
+
+
+    st.header("3. Paramètres de la Stratégie")
     bollinger_period = st.slider("Période des Bandes de Bollinger", 5, 100, 20)
     bollinger_std = st.slider("Écart-type des Bandes de Bollinger", 1.0, 4.0, 2.0, 0.1)
 
@@ -57,7 +62,6 @@ if data is not None:
     else:
         st.success("Fichier CSV chargé avec succès !")
 
-        # --- Définition de la stratégie ---
         class BollingerBandsStrategy(Strategy):
             n_period = bollinger_period
             n_std = bollinger_std
@@ -73,53 +77,37 @@ if data is not None:
                 elif crossover(self.data.Close, self.upper):
                     if self.position: self.position.close()
         
-        # --- Exécution et affichage ---
         try:
-            bt = Backtest(data, BollingerBandsStrategy, cash=10000, commission=.002)
+            # --- Utilisation du capital initial personnalisé ---
+            bt = Backtest(data, BollingerBandsStrategy, cash=initial_cash, commission=.002)
             stats = bt.run()
 
             st.header("📊 Tableau de Bord des Résultats")
-
-            # --- Affichage des métriques clés ---
+            
             col1, col2, col3, col4 = st.columns(4)
             
             with col1:
-                st.metric(
-                    label="Rendement Stratégie",
-                    value=f"{stats['Return [%]']:.2f}%",
-                    delta=f"{stats['Return [%]'] - stats['Buy & Hold Return [%]']:.2f}% vs Buy & Hold"
-                )
-                st.metric(
-                    label="Rendement Buy & Hold",
-                    value=f"{stats['Buy & Hold Return [%]']:.2f}%"
-                )
+                st.metric(label="Rendement Stratégie", value=f"{stats['Return [%]']:.2f}%", delta=f"{stats['Return [%]'] - stats['Buy & Hold Return [%]']:.2f}% vs Buy & Hold")
+                st.metric(label="Rendement Buy & Hold", value=f"{stats['Buy & Hold Return [%]']:.2f}%")
 
             with col2:
-                st.metric(
-                    label="📉 Max Drawdown",
-                    value=f"{stats['Max. Drawdown [%]']:.2f}%"
-                )
-                st.metric(
-                    label="📈 Taux de Réussite (Win Rate)",
-                    value=f"{stats['Win Rate [%]']:.2f}%"
-                )
+                st.metric(label="📉 Max Drawdown", value=f"{stats['Max. Drawdown [%]']:.2f}%")
+                st.metric(label="📈 Taux de Réussite (Win Rate)", value=f"{stats['Win Rate [%]']:.2f}%")
             
             with col3:
                 st.metric(label="Nombre de Transactions", value=stats['# Trades'])
                 st.metric(label="Gain/Perte Moyen par Trade", value=f"{stats['Avg. Trade [%]']:.2f}%")
 
             with col4:
-                 st.metric(label="Capital Final", value=f"${stats['Equity Final [$]']:,.2f}")
+                 # --- Utilisation du symbole de devise personnalisé ---
+                 st.metric(label="Capital Final", value=f"{currency_symbol}{stats['Equity Final [$]']:,.2f}")
                  st.metric(label="Durée de la Simulation", value=f"{stats['Duration']}")
 
             st.markdown("---")
-
-            # --- Affichage du graphique ---
             st.header("CHARTS")
             fig = bt.plot()
             st.plotly_chart(fig, use_container_width=True)
 
-            # --- Affichage des stats complètes dans un expander ---
             with st.expander("Voir toutes les statistiques détaillées"):
                 st.table(stats)
 
