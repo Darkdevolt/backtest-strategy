@@ -55,91 +55,114 @@ def generate_signals(df):
     return df
 
 # Backtesting de la stratégie
-def backtest_strategy(df, initial_capital=1000000):
-    capital = initial_capital
-    position = 0
+def backtest_strategy(df, initial_capital, risk_per_trade):
+    cash = initial_capital
+    positions = 0
     entry_price = 0
     trades = []
     in_position = False
     
     for i, row in df.iterrows():
+        current_price = row['close']
+        
         if not in_position and row['signal'] == 1:
+            # Calcul du capital à risquer
+            risk_capital = cash * risk_per_trade
+            
+            # Vérifier qu'on a assez de capital
+            if risk_capital < current_price:
+                continue
+                
             # Entrée en position
-            position = capital // row['close']
-            entry_price = row['close']
+            position = int(risk_capital // current_price)
+            entry_price = current_price
             stop_loss = entry_price - (2 * row['atr14'])
             take_profit = entry_price + (6 * row['atr14'])
-            capital -= position * entry_price
+            
+            # Mettre à jour le cash et les positions
+            cash -= position * entry_price
+            positions = position
             in_position = True
+            
             trades.append({
                 'date': i,
                 'type': 'BUY',
                 'price': entry_price,
                 'shares': position,
+                'amount': position * entry_price,
                 'stop_loss': stop_loss,
-                'take_profit': take_profit
+                'take_profit': take_profit,
+                'remaining_cash': cash
             })
         
         elif in_position:
             # Vérifier stop-loss et take-profit
+            exit_reason = None
+            exit_price = current_price
+            
             if row['low'] <= stop_loss:
-                # Sortie par stop-loss
-                capital += position * stop_loss
-                trades.append({
-                    'date': i,
-                    'type': 'SELL',
-                    'price': stop_loss,
-                    'shares': position,
-                    'reason': 'Stop-Loss'
-                })
-                in_position = False
-                position = 0
-            
+                exit_price = stop_loss
+                exit_reason = 'Stop-Loss'
             elif row['high'] >= take_profit:
-                # Sortie par take-profit
-                capital += position * take_profit
-                trades.append({
-                    'date': i,
-                    'type': 'SELL',
-                    'price': take_profit,
-                    'shares': position,
-                    'reason': 'Take-Profit'
-                })
-                in_position = False
-                position = 0
-            
+                exit_price = take_profit
+                exit_reason = 'Take-Profit'
             elif row['signal'] == -1:
-                # Sortie par signal
-                capital += position * row['close']
+                exit_reason = 'Signal'
+            
+            if exit_reason:
+                # Sortie de position
+                cash += positions * exit_price
+                
                 trades.append({
                     'date': i,
                     'type': 'SELL',
-                    'price': row['close'],
-                    'shares': position,
-                    'reason': 'Signal'
+                    'price': exit_price,
+                    'shares': positions,
+                    'amount': positions * exit_price,
+                    'reason': exit_reason,
+                    'remaining_cash': cash
                 })
+                
                 in_position = False
-                position = 0
+                positions = 0
+                entry_price = 0
+    
+    # Calcul du capital final
+    final_capital = cash + (positions * df['close'].iloc[-1] if in_position else cash)
     
     # Calcul des métriques de performance
     if trades:
         df_trades = pd.DataFrame(trades)
-        df_trades['profit'] = 0
-        for i in range(1, len(df_trades)):
-            if df_trades.iloc[i]['type'] == 'SELL':
-                buy_price = df_trades.iloc[i-1]['price']
-                sell_price = df_trades.iloc[i]['price']
-                shares = df_trades.iloc[i-1]['shares']
-                df_trades.at[i, 'profit'] = (sell_price - buy_price) * shares
         
-        df_trades['cum_profit'] = df_trades['profit'].cumsum() + initial_capital
-        win_trades = df_trades[df_trades['profit'] > 0]
-        win_rate = len(win_trades) / len(df_trades[df_trades['type'] == 'SELL']) if len(df_trades[df_trades['type'] == 'SELL']) > 0 else 0
+        # Calculer les profits
+        df_trades['trade_profit'] = 0
+        buy_trades = df_trades[df_trades['type'] == 'BUY']
+        sell_trades = df_trades[df_trades['type'] == 'SELL']
+        
+        if not sell_trades.empty:
+            # Calculer le profit pour chaque vente
+            for idx, sell in sell_trades.iterrows():
+                # Trouver l'achat correspondant
+                buy_idx = buy_trades.index[buy_trades.index < idx][-1]
+                buy = df_trades.loc[buy_idx]
+                
+                # Calculer le profit
+                profit = (sell['price'] - buy['price']) * buy['shares']
+                df_trades.at[idx, 'trade_profit'] = profit
+                
+            # Calculer le profit cumulé
+            df_trades['cum_profit'] = df_trades['trade_profit'].cumsum() + initial_capital
+            
+            # Taux de réussite
+            winning_trades = df_trades[df_trades['trade_profit'] > 0]
+            win_rate = len(winning_trades) / len(sell_trades)
+        else:
+            win_rate = 0
     else:
         df_trades = pd.DataFrame()
         win_rate = 0
     
-    return capital, df_trades, win_rate
+    return final_capital, df_trades, win_rate
 
 # Fonction principale
 def main():
@@ -148,12 +171,28 @@ def main():
     
     if uploaded_file is not None:
         try:
+            # Paramètres de trading
+            st.sidebar.header("Paramètres de Trading")
+            initial_capital = st.sidebar.number_input("Capital Initial (XOF)", 
+                                                     min_value=10000, 
+                                                     value=1000000, 
+                                                     step=10000)
+            
+            risk_per_trade = st.sidebar.slider("% du Capital Risqué par Trade", 
+                                             min_value=0.1, 
+                                             max_value=100.0, 
+                                             value=2.0, 
+                                             step=0.5) / 100.0
+            
+            st.sidebar.info(f"Montant risqué par trade: {initial_capital * risk_per_trade:,.0f} XOF")
+            
+            # Chargement des données
             df = pd.read_csv(uploaded_file, parse_dates=True, index_col=0)
             df.index = pd.to_datetime(df.index)
             df.sort_index(inplace=True)
             
             # Afficher un aperçu des données
-            st.subheader("Aperçu des données")
+            st.subheader("📊 Aperçu des données")
             st.write(f"**Période:** {df.index[0].date()} au {df.index[-1].date()}")
             st.write(f"**Colonnes:** {list(df.columns)}")
             st.dataframe(df.head(3))
@@ -167,14 +206,15 @@ def main():
             df = generate_signals(df)
             
             # Backtesting
-            initial_capital = 1000000
-            final_capital, trades, win_rate = backtest_strategy(df.copy(), initial_capital)
+            final_capital, trades, win_rate = backtest_strategy(df.copy(), 
+                                                              initial_capital, 
+                                                              risk_per_trade)
             
             # Calcul du Buy & Hold
-            buy_hold = initial_capital * (df['close'][-1] / df['close'][0])
+            buy_hold = initial_capital * (df['close'].iloc[-1] / df['close'].iloc[0])
             
             # Affichage des résultats
-            st.subheader("📊 Résultats de la stratégie")
+            st.subheader("📈 Résultats de la stratégie")
             col1, col2, col3 = st.columns(3)
             col1.metric("Stratégie Finale", f"{final_capital:,.0f} XOF", 
                        f"{(final_capital - initial_capital)/initial_capital:.2%}")
@@ -219,15 +259,31 @@ def main():
             
             # Graphique de performance
             if not trades.empty:
-                st.subheader("📈 Performance comparée")
+                st.subheader("📊 Performance comparée")
                 fig_perf = go.Figure()
-                fig_perf.add_trace(go.Scatter(x=df.index, y=df['close']/df['close'][0]*initial_capital, 
+                fig_perf.add_trace(go.Scatter(x=df.index, y=df['close']/df['close'].iloc[0]*initial_capital, 
                                             name='Buy & Hold', line=dict(color='#888')))
-                fig_perf.add_trace(go.Scatter(x=trades[trades['type']=='SELL']['date'], 
-                                            y=trades[trades['type']=='SELL']['cum_profit'],
+                
+                # Calculer l'évolution du capital pour la stratégie
+                strategy_value = [initial_capital]
+                strategy_dates = [df.index[0]]
+                cash = initial_capital
+                
+                for trade in trades.to_dict('records'):
+                    if trade['type'] == 'BUY':
+                        cash = trade['remaining_cash']
+                        strategy_value.append(cash)
+                        strategy_dates.append(trade['date'])
+                    elif trade['type'] == 'SELL':
+                        cash = trade['remaining_cash']
+                        strategy_value.append(cash)
+                        strategy_dates.append(trade['date'])
+                
+                fig_perf.add_trace(go.Scatter(x=strategy_dates, 
+                                            y=strategy_value,
                                             name='Stratégie', line=dict(color='#2ca02c', width=3)))
                 
-                fig_perf.update_layout(title="Performance Comparée",
+                fig_perf.update_layout(title="Évolution du Capital",
                                     yaxis_title="Valeur du Portefeuille (XOF)",
                                     height=500)
                 st.plotly_chart(fig_perf, use_container_width=True)
@@ -235,7 +291,33 @@ def main():
             # Détails des trades
             if not trades.empty:
                 st.subheader("📋 Détails des trades")
-                st.dataframe(trades)
+                
+                # Calculer le profit par trade
+                trades['profit'] = 0
+                trades['cumulative_profit'] = 0
+                
+                for i in range(len(trades)):
+                    if trades.iloc[i]['type'] == 'SELL':
+                        # Trouver le trade d'achat précédent
+                        buy_index = trades[trades.index < i][trades['type'] == 'BUY'].index[-1]
+                        buy_price = trades.loc[buy_index]['price']
+                        sell_price = trades.iloc[i]['price']
+                        shares = trades.loc[buy_index]['shares']
+                        
+                        profit = (sell_price - buy_price) * shares
+                        trades.at[i, 'profit'] = profit
+                        
+                        # Calculer le profit cumulé
+                        prev_profit = trades.loc[:i-1]['profit'].sum()
+                        trades.at[i, 'cumulative_profit'] = prev_profit + profit
+                
+                # Formater les colonnes
+                trades_display = trades.copy()
+                trades_display['amount'] = trades_display['amount'].apply(lambda x: f"{x:,.0f} XOF")
+                trades_display['profit'] = trades_display['profit'].apply(lambda x: f"{x:,.0f} XOF" if x != 0 else "")
+                trades_display['cumulative_profit'] = trades_display['cumulative_profit'].apply(lambda x: f"{x:,.0f} XOF")
+                
+                st.dataframe(trades_display)
             
             # Téléchargement des résultats
             if not trades.empty:
