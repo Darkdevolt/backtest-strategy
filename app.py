@@ -372,10 +372,10 @@ def main():
                 fig.add_trace(go.Scatter(x=df.index, y=df['bb_upper'], name='BB Sup', line=dict(color='#d62728', width=1, dash='dot')), row=1, col=1)
                 fig.add_trace(go.Scatter(x=df.index, y=df['bb_lower'], name='BB Inf', line=dict(color='#1f77b4', width=1, dash='dot')), row=1, col=1)
                 
-                # Remplissage entre les bandes
+                # Remplissage entre les bandes - CORRIGÉ
                 fig.add_trace(go.Scatter(
-                    x=pd.concat([df.index, df.index[::-1]]),
-                    y=pd.concat([df['bb_upper'], df['bb_lower'][::-1]]),
+                    x=np.concatenate([df.index, df.index[::-1]]),
+                    y=np.concatenate([df['bb_upper'], df['bb_lower'][::-1]]),
                     fill='toself',
                     fillcolor='rgba(44, 160, 44, 0.1)',
                     line=dict(color='rgba(255,255,255,0)'),
