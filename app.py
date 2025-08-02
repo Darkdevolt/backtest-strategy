@@ -104,10 +104,65 @@ def backtest_strategy(df, initial_capital, risk_per_trade, strategy_params):
     entry_price = 0
     trades = []
     in_position = False
+    hold_until = None  # Date à partir de laquelle on peut vendre
     
+    # Pré-calcul des dates de vente autorisées
+    hold_until_dict = {}
+    all_dates = df.index
+    for date in all_dates:
+        target_date = date + pd.Timedelta(days=3)
+        future_dates = all_dates[all_dates >= target_date]
+        if len(future_dates) > 0:
+            hold_until_dict[date] = future_dates[0]
+        else:
+            hold_until_dict[date] = all_dates[-1]
+
     for i, row in df.iterrows():
         current_price = row['close']
         
+        # Gestion de la position existante
+        if in_position:
+            # Vérifier si le délai de 3 jours est passé
+            can_sell = (hold_until is not None and i >= hold_until)
+            
+            # Vérifier stop-loss et take-profit (seulement si on peut vendre)
+            exit_reason = None
+            exit_price = current_price
+            
+            if can_sell:
+                if row['low'] <= stop_loss:
+                    exit_price = stop_loss
+                    exit_reason = 'Stop-Loss'
+                elif row['high'] >= take_profit:
+                    exit_price = take_profit
+                    exit_reason = 'Take-Profit'
+                elif row['signal'] == -1:
+                    exit_reason = 'Signal'
+            
+            # Vente forcée si on arrive à la fin des données
+            if not exit_reason and i == df.index[-1]:
+                exit_reason = 'Forced Exit'
+            
+            if exit_reason:
+                # Sortie de position
+                cash += positions * exit_price
+                
+                trades.append({
+                    'date': i,
+                    'type': 'SELL',
+                    'price': exit_price,
+                    'shares': positions,
+                    'amount': positions * exit_price,
+                    'reason': exit_reason,
+                    'remaining_cash': cash
+                })
+                
+                in_position = False
+                positions = 0
+                entry_price = 0
+                hold_until = None
+        
+        # Gestion des nouveaux signaux (après avoir géré les positions existantes)
         if not in_position and row['signal'] == 1:
             # Calcul du capital à risquer
             risk_capital = cash * risk_per_trade
@@ -135,6 +190,7 @@ def backtest_strategy(df, initial_capital, risk_per_trade, strategy_params):
             cash -= position * entry_price
             positions = position
             in_position = True
+            hold_until = hold_until_dict[i]  # Date à partir de laquelle on peut vendre
             
             trades.append({
                 'date': i,
@@ -144,40 +200,9 @@ def backtest_strategy(df, initial_capital, risk_per_trade, strategy_params):
                 'amount': position * entry_price,
                 'stop_loss': stop_loss,
                 'take_profit': take_profit,
-                'remaining_cash': cash
+                'remaining_cash': cash,
+                'hold_until': hold_until  # Enregistrer la date de déblocage
             })
-        
-        elif in_position:
-            # Vérifier stop-loss et take-profit
-            exit_reason = None
-            exit_price = current_price
-            
-            if row['low'] <= stop_loss:
-                exit_price = stop_loss
-                exit_reason = 'Stop-Loss'
-            elif row['high'] >= take_profit:
-                exit_price = take_profit
-                exit_reason = 'Take-Profit'
-            elif row['signal'] == -1:
-                exit_reason = 'Signal'
-            
-            if exit_reason:
-                # Sortie de position
-                cash += positions * exit_price
-                
-                trades.append({
-                    'date': i,
-                    'type': 'SELL',
-                    'price': exit_price,
-                    'shares': positions,
-                    'amount': positions * exit_price,
-                    'reason': exit_reason,
-                    'remaining_cash': cash
-                })
-                
-                in_position = False
-                positions = 0
-                entry_price = 0
     
     # Calcul du capital final
     final_capital = cash + (positions * df['close'].iloc[-1] if in_position else cash)
